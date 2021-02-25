@@ -241,7 +241,9 @@ class SettingsBase(object):
 
 class UserSettings(SettingsBase):
 
-    DEFAULTS = {}
+    DEFAULTS = {
+        "workspace": os.path.join(config.HOME_DIRECTORY, config.WORKSPACE_NAME)
+    }
     autosave = False
     filestem = "settings"
 
@@ -255,8 +257,10 @@ class SessionSettings(SettingsBase):
 
 class VirtualEnvironmentSettings(SettingsBase):
 
-    DEFAULTS = {"baseline_packages": [], "dirpath": config.VENV_DIR}
-    autosave = False
+    DEFAULTS = {
+        "baseline_packages": [],
+    }
+    autosave = True
     filestem = "venv"
 
 

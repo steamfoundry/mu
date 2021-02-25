@@ -57,8 +57,8 @@ from PyQt5.QtGui import (
 )
 from qtconsole.rich_jupyter_widget import RichJupyterWidget
 from ..i18n import language_code
-from mu.interface.themes import Font
-from mu.interface.themes import DEFAULT_FONT_SIZE
+from mu.interface.themes import Font, DEFAULT_FONT_SIZE
+from mu.interface.themes import DAY_STYLE, NIGHT_STYLE, CONTRAST_STYLE
 
 
 logger = logging.getLogger(__name__)
@@ -124,11 +124,14 @@ class JupyterREPLPane(RichJupyterWidget):
         Sets the theme / look for the REPL pane.
         """
         if theme == "contrast":
-            self.set_default_style(colors="nocolor")
+            self.style_sheet = CONTRAST_STYLE
+            self.syntax_style = "bw"
         elif theme == "night":
-            self.set_default_style(colors="nocolor")
+            self.style_sheet = NIGHT_STYLE
+            self.syntax_style = "monokai"
         else:
-            self.set_default_style()
+            self.style_sheet = DAY_STYLE
+            self.syntax_style = "default"
 
     def setFocus(self):
         """
@@ -862,6 +865,7 @@ class PythonProcessPane(QTextEdit):
         """
         if not envars:  # Envars must be a list if not passed a value.
             envars = []
+        envars = [(name, v) for (name, v) in envars if name != "PYTHONPATH"]
         self.script = ""
         if script_name:
             self.script = os.path.abspath(os.path.normcase(script_name))
@@ -1291,6 +1295,25 @@ class DebugInspector(QTreeView):
         super().__init__()
         self.setUniformRowHeights(True)
         self.setSelectionBehavior(QTreeView.SelectRows)
+        # Record row expansion/collapse to keep dicts expanded on update
+        self.expanded.connect(self.record_expanded)
+        self.collapsed.connect(self.record_collapsed)
+        self.expanded_dicts = set()
+
+    def record_expanded(self, index):
+        """
+        Keep track of expanded dicts for displaying in debugger.
+        """
+        expanded = self.model().itemFromIndex(index).text()
+        self.expanded_dicts.add(expanded)
+
+    def record_collapsed(self, index):
+        """
+        Remove collapsed dicts from set, so they render collapsed.
+        """
+        collapsed = self.model().itemFromIndex(index).text()
+        if collapsed in self.expanded_dicts:
+            self.expanded_dicts.remove(collapsed)
 
     def set_font_size(self, new_size=DEFAULT_FONT_SIZE):
         """

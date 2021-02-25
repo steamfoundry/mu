@@ -52,6 +52,8 @@ LOG_FILE = os.path.join(LOG_DIR, "mu.log")
 STYLE_REGEX = re.compile(r".*:(\d+):(\d+):\s+(.*)")
 # Regex to match flake8 output.
 FLAKE_REGEX = re.compile(r".*:(\d+):(\d+)\s+(.*)")
+# Regex to match undefined name errors for given builtins
+BUILTINS_REGEX = r"^undefined name '({})'"
 # Regex to match false positive flake errors if microbit.* is expanded.
 EXPAND_FALSE_POSITIVE = re.compile(
     r"^.*'microbit\.(\w+)' imported but unused$"
@@ -368,9 +370,7 @@ def check_flake(filename, code, builtins=None):
     reporter = MuFlakeCodeReporter()
     check(code, filename, reporter)
     if builtins:
-        builtins_regex = re.compile(
-            r"^undefined name '(" + "|".join(builtins) + r")'"
-        )
+        builtins_regex = re.compile(BUILTINS_REGEX.format("|".join(builtins)))
     feedback = {}
     for log in reporter.log:
         if import_all:
@@ -1095,7 +1095,19 @@ class Editor(QObject):
             folder = self.current_path
         else:
             current_file_path = ""
-            workspace_path = self.modes[self.mode].workspace_dir()
+            try:
+                workspace_path = self.modes[self.mode].workspace_dir()
+            except Exception as e:
+                # Avoid crashing if workspace_dir raises, use default path
+                # instead
+                workspace_path = self.modes["python"].workspace_dir()
+                logger.error(
+                    (
+                        "Could not open {} mode workspace directory"
+                        'due to exception "{}". Using:'
+                        "\n\n{}\n\n...to store your code instead"
+                    ).format(self.mode, e, workspace_path)
+                )
             tab = self._view.current_tab
             if tab and tab.path:
                 current_file_path = os.path.dirname(os.path.abspath(tab.path))
@@ -1401,27 +1413,31 @@ class Editor(QObject):
                 self.connected_devices,
             )
         if new_settings:
-            self.envars = extract_envars(new_settings["envars"])
-            self.minify = new_settings["minify"]
-            runtime = new_settings["microbit_runtime"].strip()
-            if runtime and not os.path.isfile(runtime):
-                self.microbit_runtime = ""
-                message = _("Could not find MicroPython runtime.")
-                information = _(
-                    "The micro:bit runtime you specified "
-                    "('{}') does not exist. "
-                    "Please try again."
-                ).format(runtime)
-                self._view.show_message(message, information)
-            else:
-                self.microbit_runtime = runtime
-            new_packages = [
-                p
-                for p in new_settings["packages"].lower().split("\n")
-                if p.strip()
-            ]
-            old_packages = [p.lower() for p in user_packages]
-            self.sync_package_state(old_packages, new_packages)
+            if "envars" in new_settings:
+                self.envars = extract_envars(new_settings["envars"])
+            if "minify" in new_settings:
+                self.minify = new_settings["minify"]
+            if "microbit_runtime" in new_settings:
+                runtime = new_settings["microbit_runtime"].strip()
+                if runtime and not os.path.isfile(runtime):
+                    self.microbit_runtime = ""
+                    message = _("Could not find MicroPython runtime.")
+                    information = _(
+                        "The micro:bit runtime you specified "
+                        "('{}') does not exist. "
+                        "Please try again."
+                    ).format(runtime)
+                    self._view.show_message(message, information)
+                else:
+                    self.microbit_runtime = runtime
+            if "packages" in new_settings:
+                new_packages = [
+                    p
+                    for p in new_settings["packages"].lower().split("\n")
+                    if p.strip()
+                ]
+                old_packages = [p.lower() for p in user_packages]
+                self.sync_package_state(old_packages, new_packages)
         else:
             logger.info("No admin settings changed.")
 
@@ -1502,9 +1518,19 @@ class Editor(QObject):
         button_bar.connect("quit", self.quit, "Ctrl+Q")
         self._view.status_bar.set_mode(self.modes[mode].name)
         # Update references to default file locations.
-        logger.info(
-            "Workspace directory: {}".format(self.modes[mode].workspace_dir())
-        )
+        try:
+            workspace_dir = self.modes[mode].workspace_dir()
+            logger.info("Workspace directory: {}".format(workspace_dir))
+        except Exception as e:
+            # Avoid crashing if workspace_dir raises, use default path instead
+            workspace_dir = self.modes["python"].workspace_dir()
+            logger.error(
+                (
+                    "Could not open {} mode workspace directory, "
+                    'due to exception "{}".'
+                    "Using:\n\n{}\n\n...to store your code instead"
+                ).format(mode, repr(e), workspace_dir)
+            )
         # Reset remembered current path for load/save dialogs.
         self.current_path = ""
         # Ensure auto-save timeouts are set.
@@ -1710,6 +1736,31 @@ class Editor(QObject):
                     "in the find box."
                 )
                 self._view.show_message(message, information)
+
+    def find_again(self, forward=True):
+        """
+        Handle find again (F3 and Shift+F3) functionality.
+        """
+        if self.find:
+            matched = self._view.highlight_text(self.find, forward)
+            if matched:
+                msg = _('Highlighting matches for "{}".')
+            else:
+                msg = _('Could not find "{}".')
+            self.show_status_message(msg.format(self.find))
+        else:
+            message = _("You must provide something to find.")
+            information = _(
+                "Please try again, this time with something "
+                "in the find box."
+            )
+            self._view.show_message(message, information)
+
+    def find_again_backward(self, forward=False):
+        """
+        Handle find again backward (Shift+F3) functionality.
+        """
+        self.find_again(forward=False)
 
     def toggle_comments(self):
         """
