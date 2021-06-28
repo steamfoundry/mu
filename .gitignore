@@ -56,6 +56,10 @@ coverage.xml
 # Sphinx documentation
 docs/_build/
 
+# Emacs
+*~
+TAGS
+
 # PyBuilder
 target/
 
@@ -83,3 +87,4 @@ target/
 /mu/wheels/*.whl
 /baseline_packages.json
 venv-pup/
+/local-scripts

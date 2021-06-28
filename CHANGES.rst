@@ -1,6 +1,125 @@
 Release History
 ---------------
 
+1.1.0-beta.4
+============
+
+This is a beta release and may contain bugs or unfinished features. Please
+provide bug reports or feedback via: https://github.com/mu-editor/mu/issues/new
+
+* During the beta phase, we're moving to a fortnightly release cadence. Since
+  this release is a week late, expect the next one in a week's time - 26th
+  April.
+* Carlos made many changes to clean up the specification for required modules
+  used by the installer. This will make supporting and tracking Mu's
+  dependencies MUCH easier. Thank you Carlos!
+* Huge thanks to Dan Halbert of Adafruit who contributed a significant amount
+  of refactoring to the CircuitPython mode. As a result Mu now uses the
+  `adafruit-board-toolkit` module for device identification, among many other
+  helpful changes
+  [described in Dan's pull request](https://github.com/mu-editor/mu/pull/1371).
+  Thank you Dan..!
+* Carlos was on fire... he also fixed a bug in the file-copy dialog when the
+  context menu was opened with an empty list of files.
+* Carlos (again), fixed some outstanding documentation issues for supporting
+  Raspbian Buster (and newer). These are now at https://mu.rtfd.io/.
+* Carlos (again, again) tidied up various aspects of the Makefile so there is
+  only a single source of truth for running various utilities and commands.
+* Logging was another focus for this release. Now that we have a few weeks
+  worth of crash reports we've been able to look at the parts of the
+  application that cause most grief and add extra-logging in various locations.
+  Tim put in a great effort to make sure the "first run" and other virtual
+  environment based aspects of Mu now have clearer and more useful logging and
+  throw more useful exceptions, closer to the source of the problem, for the
+  resulting crash report. Carlos ensured the IPython kernel installation was
+  properly logged.
+* We ensured various key packages were pinned to particular versions to
+  maximise compatibility with older versions of Python still found in schools.
+
+There are many pull requests and work items currently in flight and they'll be
+landing very soon as the overall quality and robustness of Mu significantly
+improves. Many thanks to everyone who continues to help, support and contribute
+to the ongoing development of Mu.
+
+1.1.0-beta.3
+============
+
+This is a beta release and may contain bugs or unfinished features. Please
+provide bug reports or feedback via: https://github.com/mu-editor/mu/issues/new
+
+* During beta phase, we're moving to a fortnightly release cadence. Expect beta
+  4 on the 12th April.
+* The final version of the Mu splash screen was delivered. Huge thanks to the
+  extraordinarily talented Steve Hawkes ([@hawkz](https://github.com/hawkz)) of
+  [The Developer Society](https://www.dev.ngo/) for his generous artistic
+  support, patience and humorous approach.
+* Thanks to a recent update in [PyGame Zero](https://pypi.org/project/pgzero/),
+  we're back to using the official package from PyPI, rather than our patched
+  fork, in the installer.
+* Both Tim and Carlos have contributed updates, fixes and tests to address a
+  bug affecting Windows users who may have a space in the file path upon which
+  Mu is found. This was a difficult bug to reproduce but Tim did a lot of
+  digging to isolate the cause with as much confidence as is possible when it
+  comes to such things. Carlos did a bunch of thankless and fiddly test related
+  work so testing with spaces in the path is part of our test suite. Work on
+  this is ongoing so expect further improvements in upcoming releases. As
+  always, many thanks for these efforts.
+* Tim addressed a `wheel`/`sdist` related problem that was causing odd side
+  effects with regard to dependancies.
+* A strange bug, where it was not possible to install third-party packages on
+  first run of Mu, opened up a deep rabbit hole of investigation. In the end
+  Tim was able to fix this AND address the source of a warning message from Qt
+  when Mu was starting for the first time.
+* The splash screen code was rewritten in such a way that objects relating to
+  the splash screen will always be garbage-collected by Python and destroyed by
+  Qt5. Previously, they existed for the full duration of the application, not
+  really causing any problems, but "in limbo" nonetheless.
+* The crash reporting tool has had a minor update so the user is reminded to
+  attach their log file to the bug report, along with an indication of where to
+  find the log file.
+
+1.1.0-beta.2
+============
+
+This is a beta release and may contain bugs or unfinished features. Please
+provide bug reports or feedback via: https://github.com/mu-editor/mu/issues/new
+
+* This is the first public beta release (beta 1 was created for testing by the
+  core development team).
+* Many minor bug fixes to the existing new features found in beta 1
+  (see below).
+* Many thanks to Martin Dybdal for his work on improving the admin panel.
+* Carlos made significant changes so Mu can be packaged with very recent
+  versions of Python. Carlos also made various changes relating to the status
+  of Python packages contained within the official installer.
+* Many thanks to Dan Pope for assistance with an upgraded version of PyGameZero
+  (which uses the latest version of PyGame - kudos to René and the other
+  developers of PyGame for the recent improvements).
+* Various fixes to the UI so that panes are easier to resize and the themes are
+  correctly applied to the REPL (thanks again to Martin for these fixes).
+* Carlos also contributed fixes relating to the micro:bit mode (compatibility
+  with versions 1 and 2).
+* Tim has made herculean efforts to ensure the creation and checking of Mu's
+  virtual environment is robust and easy to maintain.
+* A new crash reporting feature has been added. If Mu breaks the user will be
+  redirected to the endpoint codewith.mu/crash with details of the crash and an
+  option to create a bug report. This ensures Mu crashes are handled more
+  gracefully, and the user is able to see the error that caused the crash.
+* A new animated splash screen has been added so the initial creation of Mu's
+  virtual environment happens in such a way that the user can see progress is
+  being made, and updates are logged on the splash screen for the user. If Mu
+  encounters a problem at this early stage, the splash screen recovers and the
+  new crash reporting feature kicks in. The current animation was created by
+  Steve Hawkes (thank you) with a much more polished version promised very
+  soon..!
+* Behind the scenes, Tiago has continued to make outstanding work on the `pup`
+  tool we use to create the installers for Windows 64/32 bit and MacOS X. This
+  beta release will be the first to use installers created with `pup`.
+* **Known bug** - on first ever start of Mu, if in Python3 mode the package
+  manager will not work. Re-starting Mu fixes this (i.e. from second and
+  subsequent starts). We're tracking this problem via
+  [this issue](https://github.com/mu-editor/mu/issues/1358).
+
 1.1.0-beta.1
 ============
 

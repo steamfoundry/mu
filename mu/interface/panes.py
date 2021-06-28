@@ -192,7 +192,15 @@ class MicroPythonREPLPane(QTextEdit):
             to_paste = (
                 clipboard.text().replace("\n", "\r").replace("\r\r", "\r")
             )
-            self.connection.write(bytes(to_paste, "utf8"))
+            if "\r" in to_paste:
+                # Enter MicroPython's paste mode for multi-line pastes so
+                # indentation isn't messed up.
+                self.connection.write(b"\x05")  # Enter paste mode.
+                self.connection.write(bytes(to_paste, "utf8"))  # Paste.
+                self.connection.write(b"\x04")  # Exit paste mode.
+            else:
+                # Only a fragment to paste, so just insert as is.
+                self.connection.write(bytes(to_paste, "utf8"))  # Paste.
 
     def context_menu(self):
         """
@@ -520,7 +528,7 @@ class MicroPythonDeviceFileList(MuFileList):
                 local_filename = os.path.join(
                     self.home, source.currentItem().text()
                 )
-                msg = _("Copying '{}' to micro:bit.").format(local_filename)
+                msg = _("Copying '{}' to device.").format(local_filename)
                 logger.info(msg)
                 self.set_message.emit(msg)
                 self.put.emit(local_filename)
@@ -529,19 +537,22 @@ class MicroPythonDeviceFileList(MuFileList):
         """
         Fired when the put event is completed for the given filename.
         """
-        msg = _("'{}' successfully copied to micro:bit.").format(microbit_file)
+        msg = _("'{}' successfully copied to device.").format(microbit_file)
         self.set_message.emit(msg)
         self.list_files.emit()
 
     def contextMenuEvent(self, event):
+        menu_current_item = self.currentItem()
+        if menu_current_item is None:
+            return
         menu = QMenu(self)
         delete_action = menu.addAction(_("Delete (cannot be undone)"))
         action = menu.exec_(self.mapToGlobal(event.pos()))
         if action == delete_action:
             self.disable.emit()
-            microbit_filename = self.currentItem().text()
+            microbit_filename = menu_current_item.text()
             logger.info("Deleting {}".format(microbit_filename))
-            msg = _("Deleting '{}' from micro:bit.").format(microbit_filename)
+            msg = _("Deleting '{}' from device.").format(microbit_filename)
             logger.info(msg)
             self.set_message.emit(msg)
             self.delete.emit(microbit_filename)
@@ -550,9 +561,7 @@ class MicroPythonDeviceFileList(MuFileList):
         """
         Fired when the delete event is completed for the given filename.
         """
-        msg = _("'{}' successfully deleted from micro:bit.").format(
-            microbit_file
-        )
+        msg = _("'{}' successfully deleted from device.").format(microbit_file)
         self.set_message.emit(msg)
         self.list_files.emit()
 
@@ -586,7 +595,7 @@ class LocalFileList(MuFileList):
                 microbit_filename = source.currentItem().text()
                 local_filename = os.path.join(self.home, microbit_filename)
                 msg = _(
-                    "Getting '{}' from micro:bit. " "Copying to '{}'."
+                    "Getting '{}' from device. " "Copying to '{}'."
                 ).format(microbit_filename, local_filename)
                 logger.info(msg)
                 self.set_message.emit(msg)
@@ -597,16 +606,19 @@ class LocalFileList(MuFileList):
         Fired when the get event is completed for the given filename.
         """
         msg = _(
-            "Successfully copied '{}' " "from the micro:bit to your computer."
+            "Successfully copied '{}' " "from the device to your computer."
         ).format(microbit_file)
         self.set_message.emit(msg)
         self.list_files.emit()
 
     def contextMenuEvent(self, event):
-        menu = QMenu(self)
-        local_filename = self.currentItem().text()
+        menu_current_item = self.currentItem()
+        if menu_current_item is None:
+            return
+        local_filename = menu_current_item.text()
         # Get the file extension
         ext = os.path.splitext(local_filename)[1].lower()
+        menu = QMenu(self)
         open_internal_action = None
         # Mu micro:bit mode only handles .py & .hex
         if ext == ".py" or ext == ".hex":
@@ -829,6 +841,7 @@ class PythonProcessPane(QTextEdit):
         self.history_position = 0  # current position when navigation history.
         self.stdout_buffer = b""  # contains non-decoded bytes from stdout.
         self.reading_stdout = False  # flag showing if already reading stdout.
+        self.is_interactive = False  # flag if the process is interactive mode.
 
     def start_process(
         self,
@@ -863,6 +876,7 @@ class PythonProcessPane(QTextEdit):
         If python_args is given, these are passed as arguments to the Python
         interpreter used to launch the child process.
         """
+        self.is_interactive = interactive
         if not envars:  # Envars must be a list if not passed a value.
             envars = []
         envars = [(name, v) for (name, v) in envars if name != "PYTHONPATH"]

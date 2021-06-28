@@ -2,8 +2,8 @@
 """
 Tests for the user interface elements of Mu.
 """
-from PyQt5.QtWidgets import QMessageBox, QLabel
-from PyQt5.QtCore import Qt, QEvent, QPointF
+from PyQt5.QtWidgets import QMessageBox, QLabel, QMenu
+from PyQt5.QtCore import Qt, QEvent, QPointF, QUrl
 from PyQt5.QtGui import QTextCursor, QMouseEvent
 from collections import deque
 from unittest import mock
@@ -30,7 +30,7 @@ def test_PANE_ZOOM_SIZES():
     assert len(expected_sizes) == len(mu.interface.panes.PANE_ZOOM_SIZES)
 
 
-def test_MicroPythonREPLPane_paste():
+def test_MicroPythonREPLPane_paste_fragment():
     """
     Pasting into the REPL should send bytes via the serial connection.
     """
@@ -42,9 +42,27 @@ def test_MicroPythonREPLPane_paste():
     with mock.patch("mu.interface.panes.QApplication", mock_application):
         rp = mu.interface.panes.MicroPythonREPLPane(mock_repl_connection)
         rp.paste()
-    mock_repl_connection.write.assert_called_once_with(
-        bytes("paste me!", "utf8")
+    mock_repl_connection.write.assert_called_once_with(b"paste me!")
+
+
+def test_MicroPythonREPLPane_paste_multiline():
+    """
+    Pasting into the REPL should send bytes via the serial connection.
+    """
+    mock_repl_connection = mock.MagicMock()
+    mock_clipboard = mock.MagicMock()
+    mock_clipboard.text.return_value = "paste\nme!"
+    mock_application = mock.MagicMock()
+    mock_application.clipboard.return_value = mock_clipboard
+    with mock.patch("mu.interface.panes.QApplication", mock_application):
+        rp = mu.interface.panes.MicroPythonREPLPane(mock_repl_connection)
+        rp.paste()
+    assert mock_repl_connection.write.call_count == 3
+    assert mock_repl_connection.write.call_args_list[0][0][0] == b"\x05"
+    assert mock_repl_connection.write.call_args_list[1][0][0] == bytes(
+        "paste\rme!", "utf8"
     )
+    assert mock_repl_connection.write.call_args_list[2][0][0] == b"\x04"
 
 
 def test_MicroPythonREPLPane_paste_handle_unix_newlines():
@@ -61,9 +79,12 @@ def test_MicroPythonREPLPane_paste_handle_unix_newlines():
     with mock.patch("mu.interface.panes.QApplication", mock_application):
         rp = mu.interface.panes.MicroPythonREPLPane(mock_repl_connection)
         rp.paste()
-    mock_repl_connection.write.assert_called_once_with(
-        bytes("paste\rme!", "utf8")
+    assert mock_repl_connection.write.call_count == 3
+    assert mock_repl_connection.write.call_args_list[0][0][0] == b"\x05"
+    assert mock_repl_connection.write.call_args_list[1][0][0] == bytes(
+        "paste\rme!", "utf8"
     )
+    assert mock_repl_connection.write.call_args_list[2][0][0] == b"\x04"
 
 
 def test_MicroPythonREPLPane_paste_handle_windows_newlines():
@@ -80,9 +101,12 @@ def test_MicroPythonREPLPane_paste_handle_windows_newlines():
     with mock.patch("mu.interface.panes.QApplication", mock_application):
         rp = mu.interface.panes.MicroPythonREPLPane(mock_repl_connection)
         rp.paste()
-    mock_repl_connection.write.assert_called_once_with(
-        bytes("paste\rme!", "utf8")
+    assert mock_repl_connection.write.call_count == 3
+    assert mock_repl_connection.write.call_args_list[0][0][0] == b"\x05"
+    assert mock_repl_connection.write.call_args_list[1][0][0] == bytes(
+        "paste\rme!", "utf8"
     )
+    assert mock_repl_connection.write.call_args_list[2][0][0] == b"\x04"
 
 
 def test_MicroPythonREPLPane_paste_only_works_if_something_to_paste():
@@ -998,15 +1022,18 @@ def test_MicroPythonDeviceFileList_on_put():
     mfs = mu.interface.panes.MicroPythonDeviceFileList("homepath")
     mfs.set_message = mock.MagicMock()
     mfs.list_files = mock.MagicMock()
+
     mfs.on_put("my_file.py")
-    msg = "'my_file.py' successfully copied to micro:bit."
-    mfs.set_message.emit.assert_called_once_with(msg)
+
+    mfs.set_message.emit.assert_called_once_with(
+        "'my_file.py' successfully copied to device."
+    )
     mfs.list_files.emit.assert_called_once_with()
 
 
 def test_MicroPythonDeviceFileList_contextMenuEvent():
     """
-    Ensure that the menu displayed when a file on the micro:bit is
+    Ensure that the menu displayed when a file on the MicroPython device is
     right-clicked works as expected when activated.
     """
     mock_menu = mock.MagicMock()
@@ -1029,6 +1056,23 @@ def test_MicroPythonDeviceFileList_contextMenuEvent():
     mfs.delete.emit.assert_called_once_with("foo.py")
 
 
+def test_MicroPythonDeviceFileList_contextMenuEvent_empty_list():
+    """
+    Ensure that there is no menu displayed (and menu action processed) when
+    there is not files in the MicroPython device and the list is right-clicked.
+    """
+    mock_menu = mock.MagicMock()
+    mfs = mu.interface.panes.MicroPythonDeviceFileList("homepath")
+    mfs.currentItem = mock.MagicMock(return_value=None)
+    mock_event = mock.MagicMock()
+
+    with mock.patch("mu.interface.panes.QMenu", return_value=mock_menu):
+        mfs.contextMenuEvent(mock_event)
+
+    assert not mock_menu.called
+    assert not mock_event.called
+
+
 def test_MicroPythonFileList_on_delete():
     """
     On delete should emit a message and list_files signal.
@@ -1036,9 +1080,12 @@ def test_MicroPythonFileList_on_delete():
     mfs = mu.interface.panes.MicroPythonDeviceFileList("homepath")
     mfs.set_message = mock.MagicMock()
     mfs.list_files = mock.MagicMock()
+
     mfs.on_delete("my_file.py")
-    msg = "'my_file.py' successfully deleted from micro:bit."
-    mfs.set_message.emit.assert_called_once_with(msg)
+
+    mfs.set_message.emit.assert_called_once_with(
+        "'my_file.py' successfully deleted from device."
+    )
     mfs.list_files.emit.assert_called_once_with()
 
 
@@ -1094,28 +1141,26 @@ def test_LocalFileList_on_get():
     lfs = mu.interface.panes.LocalFileList("homepath")
     lfs.set_message = mock.MagicMock()
     lfs.list_files = mock.MagicMock()
+
     lfs.on_get("my_file.py")
-    msg = (
-        "Successfully copied 'my_file.py' from the micro:bit "
-        "to your computer."
+
+    lfs.set_message.emit.assert_called_once_with(
+        "Successfully copied 'my_file.py' from the device to your computer."
     )
-    lfs.set_message.emit.assert_called_once_with(msg)
     lfs.list_files.emit.assert_called_once_with()
 
 
 def test_LocalFileList_contextMenuEvent():
     """
-    Ensure that the menu displayed when a local file is
-    right-clicked works as expected when activated.
+    Ensure the menu displayed when a local .py file is right-clicked works as
+    expected when activated and signals are sent for "Open in Mu" entry.
     """
-    mock_menu = mock.MagicMock()
+    mock_menu = mock.create_autospec(QMenu, instance=True)
     mock_action_first = mock.MagicMock()
-    mock_action_second = mock.MagicMock()
-    mock_action_third = mock.MagicMock()
     mock_menu.addAction.side_effect = [
-        mock_action_first,
-        mock_action_second,
-        mock_action_third,
+        mock_action_first,  # "Open in Mu"
+        mock.MagicMock(),  # "Write to main.py on device"
+        mock.MagicMock(),  # "Open"
     ]
     mock_menu.exec_.return_value = mock_action_first
     mfs = mu.interface.panes.LocalFileList("homepath")
@@ -1128,20 +1173,61 @@ def test_LocalFileList_contextMenuEvent():
     mfs.set_message = mock.MagicMock()
     mfs.mapToGlobal = mock.MagicMock()
     mock_event = mock.MagicMock()
-    with mock.patch("mu.interface.panes.QMenu", return_value=mock_menu):
+
+    with mock.patch(
+        "mu.interface.panes.QMenu", return_value=mock_menu, autospec=True
+    ):
         mfs.contextMenuEvent(mock_event)
+
     assert mfs.set_message.emit.call_count == 0
+    assert mock_menu.addAction.call_count == 3
     mock_open.assert_called_once_with(os.path.join("homepath", "foo.py"))
+
+
+def test_LocalFileList_contextMenuEvent_hex():
+    """
+    Ensure the menu displayed when a local .hex file is right-clicked works as
+    expected when activated and signals are sent for "Open" entry.
+    """
+    mock_menu = mock.create_autospec(QMenu, instance=True)
+    mock_action_second = mock.MagicMock()
+    mock_menu.addAction.side_effect = [
+        mock.MagicMock(),  # "Open in Mu"
+        mock_action_second,  # "Open"
+    ]
+    mock_menu.exec_.return_value = mock_action_second
+    mfs = mu.interface.panes.LocalFileList("homepath")
+    mock_current = mock.MagicMock()
+    mock_current.text.return_value = "foo.hex"
+    mfs.currentItem = mock.MagicMock(return_value=mock_current)
+    mfs.set_message = mock.MagicMock()
+    mfs.mapToGlobal = mock.MagicMock()
+    mock_event = mock.MagicMock()
+
+    with mock.patch(
+        "mu.interface.panes.QMenu", return_value=mock_menu
+    ), mock.patch(
+        "mu.interface.panes.QDesktopServices", autospec=True
+    ) as mock_QDesktopServices:
+        mfs.contextMenuEvent(mock_event)
+
+    assert mfs.set_message.emit.call_count == 1
+    assert mock_menu.addAction.call_count == 2
+    mock_QDesktopServices.openUrl.assert_called_once_with(
+        QUrl.fromLocalFile(
+            os.path.abspath(os.path.join("homepath", "foo.hex"))
+        )
+    )
 
 
 def test_LocalFileList_contextMenuEvent_external():
     """
-    Ensure that the menu displayed when a local file is
-    right-clicked works as expected when activated.
+    Ensure the menu displayed when a local file with a non py/hex extension
+    is right-clicked works as expected when the "Open" option is clicked.
     """
-    mock_menu = mock.MagicMock()
+    mock_menu = mock.create_autospec(QMenu, instance=True)
     mock_action = mock.MagicMock()
-    mock_menu.addAction.side_effect = [mock_action, mock.MagicMock()]
+    mock_menu.addAction.side_effect = [mock_action, mock.MagicMock()]  # "Open"
     mock_menu.exec_.return_value = mock_action
     mfs = mu.interface.panes.LocalFileList("homepath")
     mock_open = mock.MagicMock()
@@ -1153,10 +1239,22 @@ def test_LocalFileList_contextMenuEvent_external():
     mfs.set_message = mock.MagicMock()
     mfs.mapToGlobal = mock.MagicMock()
     mock_event = mock.MagicMock()
-    with mock.patch("mu.interface.panes.QMenu", return_value=mock_menu):
+
+    with mock.patch(
+        "mu.interface.panes.QMenu", return_value=mock_menu
+    ), mock.patch(
+        "mu.interface.panes.QDesktopServices", autospec=True
+    ) as mock_QDesktopServices:
         mfs.contextMenuEvent(mock_event)
+
     assert mfs.set_message.emit.call_count == 1
+    assert mock_menu.addAction.call_count == 1
     assert mock_open.call_count == 0
+    mock_QDesktopServices.openUrl.assert_called_once_with(
+        QUrl.fromLocalFile(
+            os.path.abspath(os.path.join("homepath", "foo.qwerty"))
+        )
+    )
 
 
 def test_LocalFileList_contextMenuEvent_write_to_mainpy():
@@ -1183,12 +1281,33 @@ def test_LocalFileList_contextMenuEvent_write_to_mainpy():
     mfs.set_message = mock.MagicMock()
     mfs.mapToGlobal = mock.MagicMock()
     mock_event = mock.MagicMock()
+
     with mock.patch("mu.interface.panes.QMenu", return_value=mock_menu):
         mfs.contextMenuEvent(mock_event)
+
     assert mfs.set_message.emit.call_count == 0
     mfs.put.emit.assert_called_once_with(
         os.path.join("homepath", "foo.py"), "main.py"
     )
+
+
+def test_LocalFileList_contextMenuEvent_empty_list():
+    """
+    Ensure that there is no menu displayed with a right-clicked if the local
+    file list is empty.
+    """
+    mock_menu = mock.MagicMock()
+    mock_menu.exec_.return_value = mock.MagicMock()
+    mfs = mu.interface.panes.LocalFileList("homepath")
+    mfs.currentItem = mock.MagicMock(return_value=None)
+    mock_event = mock.MagicMock()
+
+    with mock.patch("mu.interface.panes.QMenu", return_value=mock_menu):
+        mfs.contextMenuEvent(mock_event)
+
+    assert not mock_menu.called
+    assert not mock_event.called
+    assert mock_menu.addAction.call_count == 0
 
 
 def test_FileSystemPane_init():

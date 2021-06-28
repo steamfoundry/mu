@@ -18,14 +18,34 @@ from PyQt5.QtCore import (
 from . import wheels
 from . import settings
 from . import config
+from . import __version__ as mu_version
 
 wheels_dirpath = os.path.dirname(wheels.__file__)
 
 logger = logging.getLogger(__name__)
 
 
+class VirtualEnvironmentError(Exception):
+    def __init__(self, message):
+        self.message = message
+
+
+class VirtualEnvironmentEnsureError(VirtualEnvironmentError):
+    pass
+
+
+class VirtualEnvironmentCreateError(VirtualEnvironmentError):
+    pass
+
+
+def compact(text):
+    """Remove double line spaces and anything else which might help"""
+    return "\n".join(line for line in text.splitlines() if line.strip())
+
+
 class Process(QObject):
-    """Use the QProcess mechanism to run a subprocess asynchronously
+    """
+    Use the QProcess mechanism to run a subprocess asynchronously
 
     This will interact well with Qt Gui objects, eg by connecting the
     `output` signals to an `QTextEdit.append` method and the `started`
@@ -74,7 +94,7 @@ class Process(QObject):
 
     def _set_up_run(self, **envvars):
         """Run the process with the command and args"""
-        self.process = QProcess(self)
+        self.process = QProcess()
         environment = QProcessEnvironment(self.environment)
         for k, v in envvars.items():
             environment.insert(k, v)
@@ -82,34 +102,80 @@ class Process(QObject):
         self.process.setProcessChannelMode(QProcess.MergedChannels)
 
     def run_blocking(self, command, args, wait_for_s=30.0, **envvars):
+        logger.info(
+            "About to run blocking %s with args %s and envvars %s",
+            command,
+            args,
+            envvars,
+        )
         self._set_up_run(**envvars)
         self.process.start(command, args)
-        self.wait(wait_for_s=wait_for_s)
-        return self.data()
+        return self.wait(wait_for_s=wait_for_s)
 
     def run(self, command, args, **envvars):
+        logger.info(
+            "About to run %s with args %s and envvars %s",
+            command,
+            args,
+            envvars,
+        )
         self._set_up_run(**envvars)
         self.process.readyRead.connect(self._readyRead)
         self.process.started.connect(self._started)
         self.process.finished.connect(self._finished)
-        QTimer.singleShot(
-            100, functools.partial(self.process.start, command, args)
-        )
+        partial = functools.partial(self.process.start, command, args)
+        QTimer.singleShot(1, partial)
 
     def wait(self, wait_for_s=30.0):
         finished = self.process.waitForFinished(1000 * wait_for_s)
+        exit_status = self.process.exitStatus()
+        exit_code = self.process.exitCode()
+        output = self.data()
         #
-        # If finished is False, it could be be because of an error
-        # or because we've already finished before starting to wait!
+        # if waitForFinished completes, either the process has successfully finished
+        # or it crashed, was terminated or timed out. If it does finish successfully
+        # we might still have an error code. In each case we might still have data
+        # from stdout/stderr. Unfortunately there's no way to determine that the
+        # process was timed out, as opposed to crashing in some other way
         #
-        if (
-            not finished
-            and self.process.exitStatus() == self.process.CrashExit
-        ):
-            raise VirtualEnvironmentError("Some error occurred")
+        # The three elements in play are:
+        #
+        # finished (yes/no)
+        # exitStatus (normal (0) / crashed (1)) -- we don't currently distinguish
+        # exitCode (whatever the program returns; conventionally 0 => ok)
+        #
+        logger.debug(
+            "Finished: %s; exitStatus %s; exitCode %s",
+            finished,
+            exit_status,
+            exit_code,
+        )
+
+        #
+        # Exceptions raised here will be caught by the crash-handler which will try to
+        # generate a URI out of it. There's an upper limit on URI size of ~2000
+        #
+        if not finished:
+            logger.error(compact(output))
+            raise VirtualEnvironmentError(
+                "Process did not terminate normally:\n" + compact(output)
+            )
+
+        if exit_code != 0:
+            #
+            # We finished normally but we might still have an error-code on finish
+            #
+            logger.error(compact(output))
+            raise VirtualEnvironmentError(
+                "Process finished but with error code %d:\n%s"
+                % (exit_code, compact(output))
+            )
+
+        return output
 
     def data(self):
-        return self.process.readAll().data().decode("utf-8")
+        output = self.process.readAll().data()
+        return output.decode(sys.stdout.encoding, errors="replace")
 
     def _started(self):
         self.started.emit()
@@ -122,7 +188,8 @@ class Process(QObject):
 
 
 class Pip(object):
-    """Proxy for various pip commands
+    """
+    Proxy for various pip commands
 
     While this is a fairly useful abstraction in its own right, it's at
     least initially to assist in testing, so we can mock out various
@@ -134,9 +201,10 @@ class Pip(object):
         self.process = Process()
 
     def run(
-        self, command, *args, wait_for_s=30.0, slots=Process.Slots(), **kwargs
+        self, command, *args, wait_for_s=120.0, slots=Process.Slots(), **kwargs
     ):
-        """Run a command with args, treating kwargs as Posix switches
+        """
+        Run a command with args, treating kwargs as Posix switches.
 
         eg run("python", version=True)
         run("python", "-c", "import sys; print(sys.executable)")
@@ -157,20 +225,12 @@ class Pip(object):
         params.extend(args)
 
         if slots.output is None:
-            logger.debug(
-                "About to run blocking: %s, %s, %s",
-                self.executable,
-                params,
-                wait_for_s,
-            )
             result = self.process.run_blocking(
                 self.executable, params, wait_for_s=wait_for_s
             )
+            logger.debug("Process output: %s", result.strip())
             return result
         else:
-            logger.debug(
-                "About to run unblocking: %s, %s", self.executable, params
-            )
             if slots.started:
                 self.process.started.connect(slots.started)
             self.process.output.connect(slots.output)
@@ -179,7 +239,8 @@ class Pip(object):
             self.process.run(self.executable, params)
 
     def install(self, packages, slots=Process.Slots(), **kwargs):
-        """Use pip to install a package or packages
+        """
+        Use pip to install a package or packages.
 
         If the first parameter is a string one package is installed; otherwise
         it is assumed to be an iterable of package names.
@@ -187,7 +248,6 @@ class Pip(object):
         Any kwargs are passed as command-line switches. A value of None
         indicates a switch without a value (eg --upgrade)
         """
-        logger.debug("About to pip install: %r", packages)
         if isinstance(packages, str):
             return self.run(
                 "install", packages, wait_for_s=180.0, slots=slots, **kwargs
@@ -198,7 +258,8 @@ class Pip(object):
             )
 
     def uninstall(self, packages, slots=Process.Slots(), **kwargs):
-        """Use pip to uninstall a package or packages
+        """
+        Use pip to uninstall a package or packages
 
         If the first parameter is a string one package is uninstalled;
         otherwise it is assumed to be an iterable of package names.
@@ -206,7 +267,6 @@ class Pip(object):
         Any kwargs are passed as command-line switches. A value of None
         indicates a switch without a value (eg --upgrade)
         """
-        logger.debug("About to pip uninstall: %r", packages)
         if isinstance(packages, str):
             return self.run(
                 "uninstall",
@@ -227,7 +287,8 @@ class Pip(object):
             )
 
     def freeze(self):
-        """Use pip to return a list of installed packages
+        """
+        Use pip to return a list of installed packages
 
         NB this is fairly trivial but is pulled out principally for
         testing purposes
@@ -235,7 +296,8 @@ class Pip(object):
         return self.run("freeze")
 
     def list(self):
-        """Use pip to return a list of installed packages
+        """
+        Use pip to return a list of installed packages
 
         NB this is fairly trivial but is pulled out principally for
         testing purposes
@@ -243,7 +305,8 @@ class Pip(object):
         return self.run("list")
 
     def installed(self):
-        """Yield tuples of (package_name, version)
+        """
+        Yield tuples of (package_name, version)
 
         pip list gives a more consistent view of name/version
         than pip freeze which uses different annotations for
@@ -271,11 +334,43 @@ class Pip(object):
             yield name, version
 
 
-class VirtualEnvironmentError(Exception):
-    pass
+class SplashLogHandler(logging.NullHandler):
+    """
+    A simple log handler that does only one thing: use the referenced Qt signal
+    to emit the log.
+    """
+
+    def __init__(self, emitter):
+        """
+        Returns an instance of the class that will use the Qt signal passed in
+        as emitter.
+        """
+        super().__init__()
+        self.setLevel(logging.DEBUG)
+        self.emitter = emitter
+
+    def emit(self, record):
+        """
+        Emits a record via the Qt signal.
+        """
+        messages = record.getMessage().splitlines()
+        for msg in messages:
+            output = "[{level}] - {message}".format(
+                level=record.levelname, message=msg
+            )
+            self.emitter.emit(output)
+
+    def handle(self, record):
+        """
+        Handles the log record.
+        """
+        self.emit(record)
 
 
 class VirtualEnvironment(object):
+    """
+    Represents and contains methods for manipulating a virtual environment.
+    """
 
     Slots = Process.Slots
 
@@ -296,7 +391,8 @@ class VirtualEnvironment(object):
 
     @staticmethod
     def _generate_dirpath():
-        """Construct a unique virtual environment folder
+        """
+        Construct a unique virtual environment folder
 
         To avoid clashing with previously-created virtual environments,
         construct one which includes the Python version and a timestamp
@@ -307,11 +403,44 @@ class VirtualEnvironment(object):
             time.strftime("%Y%m%d-%H%M%S"),
         )
 
+    def run_subprocess(self, *args, **kwargs):
+        """Quick wrapper to run a subprocess and log the output
+
+        Return True if the process succeeded, False otherwise
+        """
+        logger.info("Running %s with kwargs %s", args, kwargs)
+        process = subprocess.run(
+            list(args),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            **kwargs
+        )
+        stdout_output = process.stdout.decode(
+            sys.stdout.encoding, errors="replace"
+        )
+        stderr_output = process.stderr.decode(
+            sys.stderr.encoding, errors="replace"
+        )
+        output = stdout_output
+        if stderr_output:
+            output += "\n\nSTDERR: " + stderr_output
+        logger.debug(
+            "Process returned %d; output: %s",
+            process.returncode,
+            compact(output),
+        )
+        return process.returncode == 0, output
+
+    def reset_pip(self):
+        self.pip = Pip(self.pip_executable)
+
     def relocate(self, dirpath):
-        """Relocate sets up variables for, eg, the expected location and name of
+        """
+        Relocate sets up variables for, eg, the expected location and name of
         the Python and Pip binaries, but doesn't access the file system. That's
         done by code in or called from `create`
         """
+        logger.debug("Relocating to %s", dirpath)
         self.path = str(dirpath)
         self.name = os.path.basename(self.path)
         self._bin_directory = os.path.join(
@@ -323,23 +452,24 @@ class VirtualEnvironment(object):
         self.interpreter = os.path.join(
             self._bin_directory, "python" + self._bin_extension
         )
-        self.pip = Pip(
-            os.path.join(self._bin_directory, "pip" + self._bin_extension)
+        self.pip_executable = os.path.join(
+            self._bin_directory, "pip" + self._bin_extension
         )
+        self.reset_pip()
         logger.debug(
             "Virtual environment set up %s at %s", self.name, self.path
         )
         self.settings["dirpath"] = self.path
 
     def run_python(self, *args, slots=Process.Slots()):
-        """Run the referenced Python interpreter with the passed in args
+        """
+        Run the referenced Python interpreter with the passed in args
 
         If slots are supplied for the starting, output or finished signals
         they will be used; otherwise it will be assume that this running
         headless and the process will be run synchronously and output collected
         will be returned when the process is complete
         """
-
         if slots.output:
             if slots.started:
                 self.process.started.connect(slots.started)
@@ -349,10 +479,13 @@ class VirtualEnvironment(object):
             self.process.run(self.interpreter, args)
             return self.process
         else:
-            return self.process.run_blocking(self.interpreter, args)
+            output = self.process.run_blocking(self.interpreter, args)
+            logger.debug("Python output: %s", output.strip())
+            return output
 
     def _directory_is_venv(self):
-        """Determine whether a directory appears to be an existing venv
+        """
+        Determine whether a directory appears to be an existing venv
 
         There appears to be no canonical way to achieve this. Often the
         presence of a pyvenv.cfg file is enough, but this isn't always there.
@@ -372,27 +505,141 @@ class VirtualEnvironment(object):
 
         return False
 
-    def ensure_and_create(self):
-        n_retries = 3
-        for n in range(n_retries):
-            try:
-                logger.debug("Checking venv; attempt #%d", 1 + n)
-                self.ensure()
-            except VirtualEnvironmentError:
-                logger.debug("Venv not present or correct")
-                new_dirpath = self._generate_dirpath()
-                logger.debug("Creating new venv at %s", new_dirpath)
-                self.relocate(new_dirpath)
-                self.create()
-            else:
-                return
+    def quarantine_venv(self, reason="FAILED"):
+        error_dirpath = self.path + "." + reason
+        try:
+            os.rename(self.path, error_dirpath)
+        except OSError:
+            logger.exception(
+                "Unable to quarantine %s as %s", self.path, error_dirpath
+            )
+        else:
+            logger.info("Quarantined %s as %s", self.path, error_dirpath)
 
-        raise VirtualEnvironmentError(
-            "Unable to create a working virtual environment"
-        )
+    def recreate(self):
+        """Recreate this virtual environment with updated baseline packages and the
+        same user packages
+
+        The intended use is when the Mu version changes as this can bring with it
+        additional and/or updated packages. The simplest thing to do is to switch
+        to a new venv and then pull in the packages the user had additionally installed
+        """
+        #
+        # Keep track of the user packages installed into the current venv
+        #
+        _, user_packages = self.installed_packages()
+
+        #
+        # Now, quarantine the current venv with
+        # a marker to say it's been superseded
+        #
+        self.quarantine_venv(reason="SUPERSEDED")
+
+        #
+        # Create a new venv which will then become the current one.
+        # Install the (possibly updated) baseline packages
+        #
+        self.relocate(self._generate_dirpath())
+        self.create()
+
+        #
+        # Now reinstall the original user packages
+        #
+        logger.debug("About to reinstall user packages: %s", user_packages)
+        self.install_user_packages(user_packages)
+
+    def ensure_and_create(self, emitter=None):
+        """Check whether we have a valid virtual environment in place and, if not,
+        create a new one. Allow a couple of tries in case we have temporary glitches
+        around the network, file contention etc.
+        """
+        splash_handler = None
+        if emitter:
+            splash_handler = SplashLogHandler(emitter)
+            splash_handler.setLevel(logging.INFO)
+            logger.addHandler(splash_handler)
+            logger.info("Added log handler.")
+
+        n_tries = 2
+        n = 1
+        #
+        # First time around we'll have a path with nothing in it
+        # Jump straight to creation and let the ensure take over afterwards
+        # For the happy path we'll get a clean creation and a clean ensure
+        #
+        try_to_create = not os.path.exists(self.path)
+        while True:
+            logger.debug("Checking virtual environment; attempt #%d.", n)
+            try:
+                #
+                # try_to_create will be True if this is a brand new install
+                # or if we've failed to ensure at least once
+                #
+                if try_to_create:
+                    self.create()
+                    try_to_create = False
+
+                #
+                # Otherwise check whether the venv settings match the version of Mu
+                # If not, recreate the venv with updated baseline packages and
+                # the existing user packages
+                #
+                else:
+                    venv_mu_version = self.settings.get(
+                        "mu_version", "-no-version-"
+                    )
+                    if venv_mu_version != mu_version:
+                        logger.warning(
+                            "Venv created by Mu version %s; Current Mu is version %s",
+                            venv_mu_version,
+                            mu_version,
+                        )
+                        self.recreate()
+
+                #
+                # In any situation (initial creation, recreation after Mu update,
+                # regular run) ensure that the venv is still valid
+                #
+                self.ensure()
+                logger.info("Valid virtual environment found at %s", self.path)
+
+                #
+                # If we reach this point, ensure hasn't raised an exception and
+                # we're good to save settings and move on
+                #
+                self.settings.save()
+                break
+
+            except VirtualEnvironmentError as exc:
+                #
+                # If any of the ensure/create steps cause a VirtualEnvironmentError
+                # retry up to a maximum number in case we've just been unlucky
+                # with network, file contention etc.
+                #
+                logger.error(exc.message)
+                self.quarantine_venv()
+                if n < n_tries:
+                    self.relocate(self._generate_dirpath())
+                    try_to_create = True
+                    n += 1
+                else:
+                    raise
+            finally:
+                logger.debug(
+                    "Emitter: %s; Splash Handler; %s"
+                    % (emitter, splash_handler)
+                )
+                if emitter and splash_handler:
+                    logger.removeHandler(splash_handler)
 
     def ensure(self):
-        """Ensure that virtual environment exists and is in a good state"""
+        """
+        Ensure that virtual environment exists and is in a good state.
+
+        If any of these fails, they should raise a (subclass of)
+        VirtualEnvironmentError which will bubble up to `ensure_and_create` and be
+        caught and acted on appropriately
+        """
         self.ensure_path()
         self.ensure_interpreter()
         self.ensure_interpreter_version()
@@ -400,40 +647,45 @@ class VirtualEnvironment(object):
         self.ensure_key_modules()
 
     def ensure_path(self):
-        """Ensure that the virtual environment path exists and is a valid venv"""
+        """
+        Ensure that the virtual environment path exists and is a valid venv.
+        """
         if not os.path.exists(self.path):
-            message = "%s does not exist" % self.path
-            logger.error(message)
-            raise VirtualEnvironmentError(message)
+            raise VirtualEnvironmentEnsureError(
+                "%s does not exist." % self.path
+            )
         elif not os.path.isdir(self.path):
-            message = "%s exists but is not a directory" % self.path
-            logger.error(message)
-            raise VirtualEnvironmentError(message)
+            raise VirtualEnvironmentEnsureError(
+                "%s exists but is not a directory." % self.path
+            )
         elif not self._directory_is_venv():
-            message = "Directory %s exists but is not a venv" % self.path
-            logger.error(message)
-            raise VirtualEnvironmentError(message)
-        logger.info("Virtual Environment found at %s", self.path)
+            raise VirtualEnvironmentEnsureError(
+                "Directory %s exists but is not a venv." % self.path
+            )
+        logger.info("Virtual Environment found at: %s", self.path)
 
     def ensure_interpreter(self):
-        """Ensure there is an interpreter of the expected name at the expected
-        location, given the platform and naming conventions
+        """
+        Ensure there is an interpreter of the expected name at the expected
+        location, given the platform and naming conventions.
 
-        NB if the interpreter is present as a symlink to a system interpreter (likely
-        for a venv) but the link is broken, then os.path.isfile will fail as though
-        the file wasn't there. Which is what we want in these circumstances
+        NB if the interpreter is present as a symlink to a system interpreter
+        (likely for a venv) but the link is broken, then os.path.isfile will
+        fail as though the file wasn't there. Which is what we want in these
+        circumstances.
         """
         if os.path.isfile(self.interpreter):
-            logger.info("Interpreter found at %s", self.interpreter)
+            logger.info("Interpreter found at: %s", self.interpreter)
         else:
-            message = (
-                "Interpreter not found where expected at %s" % self.interpreter
+            raise VirtualEnvironmentEnsureError(
+                "Interpreter not found where expected at: %s"
+                % self.interpreter
             )
-            logger.error(message)
-            raise VirtualEnvironmentError(message)
 
     def ensure_interpreter_version(self):
-        """Ensure that the venv interpreter matches the version of Python running Mu
+        """
+        Ensure that the venv interpreter matches the version of Python running
+        Mu.
 
         This is necessary because otherwise we'll have mismatched wheels etc.
         """
@@ -441,54 +693,64 @@ class VirtualEnvironment(object):
         #
         # Can't use self.run_python as we're not yet within the Qt UI loop
         #
-        process = subprocess.run(
-            [
-                self.interpreter,
-                "-c",
-                'import sys; print("%s%s" % sys.version_info[:2])',
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            check=True,
+        ok, output = self.run_subprocess(
+            self.interpreter,
+            "-c",
+            'import sys; print("%s%s" % sys.version_info[:2])',
         )
-        venv_version = process.stdout.decode("utf-8").strip()
+        if not ok:
+            raise VirtualEnvironmentEnsureError(
+                "Failed to run venv interpreter %s\n%s"
+                % (self.interpreter, compact(output))
+            )
+
+        venv_version = output.strip()
         if current_version == venv_version:
             logger.info("Both interpreters at version %s", current_version)
         else:
-            message = (
-                "Mu interpreter is at version %s; venv interpreter is at version %s"
+            raise VirtualEnvironmentEnsureError(
+                "Mu interpreter at version %s; venv interpreter at version %s."
                 % (current_version, venv_version)
             )
-            logger.error(message)
-            raise VirtualEnvironmentError(message)
 
     def ensure_key_modules(self):
-        """Ensure that the venv interpreter is able to load key modules"""
+        """
+        Ensure that the venv interpreter is able to load key modules.
+        """
         for module, *_ in wheels.mode_packages:
-            logger.debug("Trying to import %s", module)
-            try:
-                subprocess.run(
-                    [self.interpreter, "-c", "import %s" % module],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    check=True,
+            logger.debug("Verifying import of: %s", module)
+            ok, output = self.run_subprocess(
+                self.interpreter, "-c", "import %s" % module
+            )
+            if not ok:
+                raise VirtualEnvironmentEnsureError(
+                    "Failed to import: %s\n%s" % (module, compact(output))
                 )
-            except subprocess.CalledProcessError:
-                message = "Failed to import %s" % module
-                logger.error(message)
-                raise VirtualEnvironmentError(message)
 
     def ensure_pip(self):
-        if os.path.isfile(self.pip.executable):
-            logger.info("Pip found at %s", self.pip.executable)
+        """
+        Ensure that pip is available.
+        """
+        if os.path.isfile(self.pip_executable):
+            logger.info("Pip found at: %s", self.pip_executable)
         else:
-            message = (
-                "Pip not found where expected at %s" % self.pip.executable
+            raise VirtualEnvironmentEnsureError(
+                "Pip not found where expected at: %s" % self.pip_executable
             )
-            logger.error(message)
-            raise VirtualEnvironmentError(message)
 
     def create(self):
+        """Create a new virtualenv and install baseline packages & kernel
+
+        If a failure occurs, attempt to move the failed attempt out of the way
+        before re-raising the error.
+        """
+        self.create_venv()
+        self.install_baseline_packages()
+        self.register_baseline_packages()
+        self.install_jupyter_kernel()
+        self.settings["mu_version"] = mu_version
+
+    def create_venv(self):
         """
         Create a new virtualenv at the referenced path.
         """
@@ -496,40 +758,73 @@ class VirtualEnvironment(object):
         logger.info("Virtualenv name: {}".format(self.name))
 
         env = dict(os.environ)
-        subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "virtualenv",
-                "-p",
-                sys.executable,
-                "-q",
-                self.path,
-            ],
-            check=True,
+        ok, output = self.run_subprocess(
+            sys.executable,
+            "-m",
+            "virtualenv",
+            "-p",
+            sys.executable,
+            "-q",
+            self.path,
             env=env,
         )
-        # Set the path to the interpreter
-        self.install_baseline_packages()
-        self.register_baseline_packages()
-        self.install_jupyter_kernel()
+        if ok:
+            logger.info(
+                "Created virtual environment using %s at %s",
+                sys.executable,
+                self.path,
+            )
+        else:
+            raise VirtualEnvironmentCreateError(
+                "Unable to create a virtual environment using %s at %s\n%s"
+                % (sys.executable, self.path, compact(output))
+            )
+
+    def upgrade_pip(self):
+        logger.debug(
+            "About to upgrade pip; interpreter %s %s",
+            self.interpreter,
+            "exists" if os.path.exists(self.interpreter) else "doesn't exist",
+        )
+        ok, output = self.run_subprocess(
+            self.interpreter, "-m", "pip", "install", "--upgrade", "pip"
+        )
+        if ok:
+            logger.info("Upgraded pip")
+        else:
+            raise VirtualEnvironmentCreateError(
+                "Unable to upgrade pip\n%s" % compact(output)
+            )
 
     def install_jupyter_kernel(self):
-        kernel_name = '"Python/Mu ({})"'.format(self.name)
-        logger.info("Installing Jupyter Kernel %s", kernel_name)
-        return self.run_python(
+        """
+        Install a Jupyter kernel for Mu (the name of the kernel indicates this
+        is a Mu related kernel).
+        """
+        kernel_name = self.name.replace(" ", "-")
+        display_name = '"Python/Mu ({})"'.format(kernel_name)
+        logger.info("Installing Jupyter Kernel: %s", kernel_name)
+        ok, output = self.run_subprocess(
+            sys.executable,
             "-m",
             "ipykernel",
             "install",
             "--user",
             "--name",
-            self.name,
-            "--display-name",
             kernel_name,
+            "--display-name",
+            display_name,
         )
+        if ok:
+            logger.info("Installed Jupyter Kernel: %s", kernel_name)
+        else:
+            raise VirtualEnvironmentCreateError(
+                "Unable to install kernel\n%s" % compact(output)
+            )
 
     def install_baseline_packages(self):
-        """Install all packages needed for non-core activity
+        """
+        Install all packages needed for non-core activity.
 
         Each mode needs one or more packages to be able to run: pygame zero
         mode needs pgzero and its dependencies; web mode needs Flask and so on.
@@ -538,9 +833,9 @@ class VirtualEnvironment(object):
         we're not running from an installer, then just pip install in the
         usual way.
 
-        --upgrade is currently used with a thought to upgrade-releases of Mu
+        --upgrade is currently used with a thought to upgrade-releases of Mu.
         """
-        logger.info("Installing baseline packages")
+        logger.info("Installing baseline packages.")
         logger.info(
             "%s %s",
             wheels_dirpath,
@@ -555,41 +850,56 @@ class VirtualEnvironment(object):
         #
         wheel_filepaths = glob.glob(os.path.join(wheels_dirpath, "*.whl"))
         if not wheel_filepaths:
-            logger.warn(
+            logger.warning(
                 "No wheels found in %s; downloading...", wheels_dirpath
             )
-            wheels.download()
-            wheel_filepaths = glob.glob(os.path.join(wheels_dirpath, "*.whl"))
+            try:
+                wheels.download(interpreter=self.interpreter, logger=logger)
+            except wheels.WheelsDownloadError as exc:
+                raise VirtualEnvironmentCreateError(exc.message)
+            else:
+                wheel_filepaths = glob.glob(
+                    os.path.join(wheels_dirpath, "*.whl")
+                )
 
         if not wheel_filepaths:
-            raise VirtualEnvironmentError(
+            raise VirtualEnvironmentCreateError(
                 "No wheels in %s; try `python -mmu.wheels`" % wheels_dirpath
             )
-        logger.debug(self.pip.install(wheel_filepaths))
+        self.reset_pip()
+        for wheel in wheel_filepaths:
+            logger.info("About to install from wheels: {}".format(wheel))
+            self.pip.install(wheel, deps=False, index=False)
 
     def register_baseline_packages(self):
-        """Keep track of the baseline packages installed into the empty venv"""
+        """
+        Keep track of the baseline packages installed into the empty venv.
+        """
+        self.reset_pip()
         packages = list(self.pip.installed())
         self.settings["baseline_packages"] = packages
 
     def baseline_packages(self):
-        """Return the list of baseline packages"""
+        """
+        Return the list of baseline packages.
+        """
         return self.settings.get("baseline_packages")
 
     def install_user_packages(self, packages, slots=Process.Slots()):
+        """
+        Install user defined packages.
+        """
         logger.info("Installing user packages: %s", ", ".join(packages))
-        self.pip.install(
-            packages,
-            slots=slots,
-            upgrade=True,
-        )
+        self.reset_pip()
+        self.pip.install(packages, slots=slots, upgrade=True)
 
     def remove_user_packages(self, packages, slots=Process.Slots()):
+        """
+        Remove user defined packages.
+        """
         logger.info("Removing user packages: %s", ", ".join(packages))
-        self.pip.uninstall(
-            packages,
-            slots=slots,
-        )
+        self.reset_pip()
+        self.pip.uninstall(packages, slots=slots)
 
     def installed_packages(self):
         """
@@ -597,22 +907,11 @@ class VirtualEnvironment(object):
         containing the referenced Python interpreter.
         """
         logger.info("Discovering installed third party modules in venv.")
-
-        #
-        # FIXME: Basically we need a way to distinguish between installed
-        # baseline packages and user-added packages. The baseline_packages
-        # in this class (or, later, from modes) are just the top-level classes:
-        # flask, pgzero etc. But they bring in many others further down. So:
-        # we either need to keep track of what's installed as part of the
-        # baseline install; or to keep track of what's installed by users.
-        # And then we have to hold those in the settings file
-        # The latter is probably easier.
-        #
-
         baseline_packages = [
             name for name, version in self.baseline_packages()
         ]
         user_packages = []
+        self.reset_pip()
         for package, version in self.pip.installed():
             if package not in baseline_packages:
                 user_packages.append(package)
